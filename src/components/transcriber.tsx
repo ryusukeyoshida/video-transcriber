@@ -27,6 +27,7 @@ export function Transcriber() {
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [result, setResult] = useState("");
+  const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const [dictionary, setDictionary] = useState<DictionaryEntry[]>([]);
   const [showDict, setShowDict] = useState(false);
@@ -124,6 +125,7 @@ export function Transcriber() {
     setStatus("processing");
     setError("");
     setResult("");
+    setNote("");
 
     try {
       const formData = new FormData();
@@ -157,6 +159,7 @@ export function Transcriber() {
       if (!res.ok) throw new Error(data.error || "文字起こしに失敗しました");
 
       setResult(data.text);
+      if (data.note) setNote(data.note);
       setStatus("done");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "エラーが発生しました");
@@ -422,7 +425,12 @@ export function Transcriber() {
                 </button>
               </div>
             </div>
-            <div className="p-5">
+            <div className="p-5 space-y-3">
+              {note && (
+                <p className="text-[11px] text-amber-600 bg-amber-50 rounded-lg px-3 py-2">
+                  {note}
+                </p>
+              )}
               <div className="rounded-xl bg-slate-50 p-4">
                 <p className="whitespace-pre-wrap text-sm leading-7 text-slate-800">
                   {result}

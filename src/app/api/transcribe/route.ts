@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI, { toFile } from "openai";
-import ytdl from "@distube/ytdl-core";
+import { YoutubeTranscript } from "youtube-transcript";
 
 export const maxDuration = 120;
 
@@ -34,6 +34,22 @@ export async function POST(request: NextRequest) {
     const url = formData.get("url") as string | null;
     const dictionaryStr = formData.get("dictionary") as string | null;
 
+    let dictionary: DictEntry[] = [];
+    if (dictionaryStr) {
+      try {
+        dictionary = JSON.parse(dictionaryStr);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const ytMatch = url?.match(
+      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]+)/,
+    );
+    if (ytMatch && !file) {
+      return handleYouTube(ytMatch[1], dictionary);
+    }
+
     let audioFile: Awaited<ReturnType<typeof toFile>>;
 
     if (file) {
@@ -52,15 +68,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    let dictionary: DictEntry[] = [];
-    if (dictionaryStr) {
-      try {
-        dictionary = JSON.parse(dictionaryStr);
-      } catch {
-        /* ignore parse errors */
-      }
-    }
-
     const prompt =
       dictionary.length > 0
         ? dictionary.map((e) => e.notation).join("、")
@@ -76,11 +83,7 @@ export async function POST(request: NextRequest) {
     });
 
     let text = transcription.text;
-    for (const entry of dictionary) {
-      if (entry.reading && entry.notation && entry.reading !== entry.notation) {
-        text = text.replaceAll(entry.reading, entry.notation);
-      }
-    }
+    text = applyDictionary(text, dictionary);
 
     return NextResponse.json({ text });
   } catch (err: unknown) {
@@ -91,16 +94,47 @@ export async function POST(request: NextRequest) {
   }
 }
 
+async function handleYouTube(
+  videoId: string,
+  dictionary: DictEntry[],
+): Promise<NextResponse> {
+  try {
+    const segments = await YoutubeTranscript.fetchTranscript(videoId, {
+      lang: "ja",
+    });
+
+    if (!segments || segments.length === 0) {
+      return NextResponse.json(
+        {
+          error:
+            "この動画には字幕データがありません。動画をダウンロードしてファイルアップロードをお試しください。",
+        },
+        { status: 400 },
+      );
+    }
+
+    let text = segments.map((s) => s.text).join(" ");
+    text = text.replace(/\s+/g, " ").trim();
+    text = applyDictionary(text, dictionary);
+
+    return NextResponse.json({
+      text,
+      note: "YouTube字幕データから取得しました。Whisper精度で文字起こしするには、動画をダウンロードしてファイルアップロードをご利用ください。",
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return NextResponse.json(
+      {
+        error: `YouTube字幕の取得に失敗しました: ${msg}\n\n動画をダウンロードしてファイルアップロードをお試しください。`,
+      },
+      { status: 400 },
+    );
+  }
+}
+
 async function downloadFromUrl(
   url: string,
 ): Promise<{ file: Awaited<ReturnType<typeof toFile>> } | { error: string }> {
-  const ytMatch = url.match(
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]+)/,
-  );
-  if (ytMatch) {
-    return downloadFromYouTube(url);
-  }
-
   const loomMatch = url.match(/loom\.com\/share\/([a-zA-Z0-9]+)/);
   if (loomMatch) {
     return downloadFromLoom(loomMatch[1]);
@@ -139,51 +173,6 @@ async function downloadFromUrl(
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return { error: `URLからのダウンロードに失敗しました: ${msg}` };
-  }
-}
-
-async function downloadFromYouTube(
-  url: string,
-): Promise<{ file: Awaited<ReturnType<typeof toFile>> } | { error: string }> {
-  try {
-    const info = await ytdl.getInfo(url);
-    const title = info.videoDetails.title || "youtube-audio";
-
-    const format = ytdl.chooseFormat(info.formats, {
-      quality: "lowestaudio",
-      filter: "audioonly",
-    });
-
-    if (!format) {
-      return {
-        error:
-          "YouTube動画の音声フォーマットを取得できませんでした。動画をダウンロードしてファイルアップロードをお試しください。",
-      };
-    }
-
-    const stream = ytdl.downloadFromInfo(info, { format });
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    const buffer = Buffer.concat(chunks);
-
-    const ext =
-      format.container === "webm"
-        ? "webm"
-        : format.container === "mp4"
-          ? "m4a"
-          : "mp3";
-
-    const file = await toFile(buffer, `${title}.${ext}`, {
-      type: format.mimeType?.split(";")[0] || `audio/${ext}`,
-    });
-    return { file };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return {
-      error: `YouTube動画の取得に失敗しました: ${msg}\n\n動画をダウンロードしてファイルアップロードをお試しください。`,
-    };
   }
 }
 
@@ -233,6 +222,16 @@ async function downloadFromLoom(
     const msg = err instanceof Error ? err.message : String(err);
     return { error: `Loom動画の取得に失敗しました: ${msg}` };
   }
+}
+
+function applyDictionary(text: string, dictionary: DictEntry[]): string {
+  let result = text;
+  for (const entry of dictionary) {
+    if (entry.reading && entry.notation && entry.reading !== entry.notation) {
+      result = result.replaceAll(entry.reading, entry.notation);
+    }
+  }
+  return result;
 }
 
 function extFromContentType(ct: string): string {
