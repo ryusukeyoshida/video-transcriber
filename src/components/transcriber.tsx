@@ -14,8 +14,14 @@ type Status = "idle" | "processing" | "done" | "error";
 const ACCEPTED =
   ".mp3,.mp4,.mpeg,.mpga,.m4a,.wav,.webm,.ogg,.mov,.avi,.mkv,.flac,.aac";
 const MAX_SIZE = 25 * 1024 * 1024;
+const SESSION_KEY = "videoscribe-auth";
 
 export function Transcriber() {
+  const [authed, setAuthed] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState("");
+  const [pwInput, setPwInput] = useState("");
+
   const [tab, setTab] = useState<InputTab>("file");
   const [file, setFile] = useState<File | null>(null);
   const [url, setUrl] = useState("");
@@ -29,6 +35,48 @@ export function Transcriber() {
   const [elapsed, setElapsed] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>(null);
+
+  useEffect(() => {
+    const saved = sessionStorage.getItem(SESSION_KEY);
+    if (saved) {
+      verifyPassword(saved).then((ok) => {
+        if (ok) setAuthed(true);
+        setAuthLoading(false);
+      });
+    } else {
+      verifyPassword("").then((ok) => {
+        if (ok) setAuthed(true);
+        setAuthLoading(false);
+      });
+    }
+  }, []);
+
+  async function verifyPassword(pw: string): Promise<boolean> {
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: pw }),
+      });
+      const data = await res.json();
+      return data.ok === true;
+    } catch {
+      return false;
+    }
+  }
+
+  const handleLogin = async () => {
+    setAuthError("");
+    setAuthLoading(true);
+    const ok = await verifyPassword(pwInput);
+    if (ok) {
+      sessionStorage.setItem(SESSION_KEY, pwInput);
+      setAuthed(true);
+    } else {
+      setAuthError("パスワードが正しくありません");
+    }
+    setAuthLoading(false);
+  };
 
   useEffect(() => {
     setDictionary(loadDictionary());
@@ -97,6 +145,9 @@ export function Transcriber() {
         formData.append("dictionary", JSON.stringify(dictionary));
       }
 
+      const savedPw = sessionStorage.getItem(SESSION_KEY) || "";
+      formData.append("password", savedPw);
+
       const res = await fetch("/api/transcribe", {
         method: "POST",
         body: formData,
@@ -128,6 +179,45 @@ export function Transcriber() {
     a.click();
     URL.revokeObjectURL(href);
   };
+
+  if (!authed) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 via-white to-indigo-50/30 px-4">
+        <div className="w-full max-w-sm space-y-6 text-center">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+              <span className="text-indigo-600">Video</span>Scribe
+            </h1>
+            <p className="mt-1 text-sm text-slate-500">
+              パスワードを入力してください
+            </p>
+          </div>
+          {!authLoading && (
+            <div className="space-y-3">
+              <input
+                type="password"
+                value={pwInput}
+                onChange={(e) => setPwInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleLogin()}
+                placeholder="パスワード"
+                autoFocus
+                className="w-full rounded-xl border border-slate-200 px-4 py-3 text-center text-sm placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              />
+              {authError && (
+                <p className="text-sm text-red-600">{authError}</p>
+              )}
+              <button
+                onClick={handleLogin}
+                className="w-full rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-md shadow-indigo-600/20 transition hover:bg-indigo-700 active:scale-[0.99]"
+              >
+                ログイン
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/30">

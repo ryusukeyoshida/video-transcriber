@@ -19,7 +19,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const accessPassword = process.env.ACCESS_PASSWORD;
     const formData = await request.formData();
+    const password = formData.get("password") as string | null;
+
+    if (accessPassword && password !== accessPassword) {
+      return NextResponse.json(
+        { error: "認証に失敗しました。パスワードを確認してください。" },
+        { status: 401 },
+      );
+    }
+
     const file = formData.get("file") as File | null;
     const url = formData.get("url") as string | null;
     const dictionaryStr = formData.get("dictionary") as string | null;
