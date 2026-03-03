@@ -89,8 +89,18 @@ export async function POST(request: NextRequest) {
   } catch (err: unknown) {
     const message =
       err instanceof Error ? err.message : "文字起こし中にエラーが発生しました";
+    const stack = err instanceof Error ? err.stack : undefined;
     console.error("Transcription error:", err);
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: message,
+        debug: {
+          type: err instanceof Error ? err.constructor.name : typeof err,
+          stack: stack?.split("\n").slice(0, 5).join("\n"),
+        },
+      },
+      { status: 500 },
+    );
   }
 }
 
@@ -98,38 +108,54 @@ async function handleYouTube(
   videoId: string,
   dictionary: DictEntry[],
 ): Promise<NextResponse> {
-  try {
-    const segments = await YoutubeTranscript.fetchTranscript(videoId, {
-      lang: "ja",
-    });
+  const attempts: { lang: string | undefined; error: string }[] = [];
 
-    if (!segments || segments.length === 0) {
-      return NextResponse.json(
-        {
-          error:
-            "この動画には字幕データがありません。動画をダウンロードしてファイルアップロードをお試しください。",
-        },
-        { status: 400 },
-      );
+  for (const lang of ["ja", undefined]) {
+    try {
+      const segments = await YoutubeTranscript.fetchTranscript(videoId, {
+        ...(lang ? { lang } : {}),
+      });
+
+      if (!segments || segments.length === 0) {
+        attempts.push({
+          lang,
+          error: `字幕データが空でした（lang=${lang ?? "auto"}）`,
+        });
+        continue;
+      }
+
+      let text = segments.map((s) => s.text).join(" ");
+      text = text.replace(/\s+/g, " ").trim();
+      text = applyDictionary(text, dictionary);
+
+      return NextResponse.json({
+        text,
+        note: `YouTube字幕データから取得しました（lang=${lang ?? "auto"}, ${segments.length}セグメント）。Whisper精度で文字起こしするには、動画をダウンロードしてファイルアップロードをご利用ください。`,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      attempts.push({ lang, error: msg });
     }
-
-    let text = segments.map((s) => s.text).join(" ");
-    text = text.replace(/\s+/g, " ").trim();
-    text = applyDictionary(text, dictionary);
-
-    return NextResponse.json({
-      text,
-      note: "YouTube字幕データから取得しました。Whisper精度で文字起こしするには、動画をダウンロードしてファイルアップロードをご利用ください。",
-    });
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json(
-      {
-        error: `YouTube字幕の取得に失敗しました: ${msg}\n\n動画をダウンロードしてファイルアップロードをお試しください。`,
-      },
-      { status: 400 },
-    );
   }
+
+  const debugLog = attempts
+    .map((a, i) => `[試行${i + 1}] lang=${a.lang ?? "auto"}: ${a.error}`)
+    .join("\n");
+
+  console.error(`YouTube transcript failed for ${videoId}:\n${debugLog}`);
+
+  return NextResponse.json(
+    {
+      error:
+        "YouTube字幕の取得に失敗しました。この動画は字幕が無効になっている可能性があります。\n動画をダウンロードしてファイルアップロードをお試しください。",
+      debug: {
+        videoId,
+        attempts,
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+      },
+    },
+    { status: 400 },
+  );
 }
 
 async function downloadFromUrl(

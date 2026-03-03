@@ -29,6 +29,8 @@ export function Transcriber() {
   const [result, setResult] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
+  const [errorDebug, setErrorDebug] = useState<Record<string, unknown> | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
   const [dictionary, setDictionary] = useState<DictionaryEntry[]>([]);
   const [showDict, setShowDict] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -124,6 +126,8 @@ export function Transcriber() {
   const handleTranscribe = async () => {
     setStatus("processing");
     setError("");
+    setErrorDebug(null);
+    setShowDebug(false);
     setResult("");
     setNote("");
 
@@ -156,7 +160,10 @@ export function Transcriber() {
       });
 
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "文字起こしに失敗しました");
+      if (!res.ok) {
+        if (data.debug) setErrorDebug(data.debug);
+        throw new Error(data.error || "文字起こしに失敗しました");
+      }
 
       setResult(data.text);
       if (data.note) setNote(data.note);
@@ -398,8 +405,25 @@ export function Transcriber() {
 
         {/* --- Error --- */}
         {error && (
-          <div className="rounded-2xl bg-red-50 px-5 py-4 ring-1 ring-red-200/60">
-            <p className="text-sm leading-relaxed text-red-700">{error}</p>
+          <div className="rounded-2xl bg-red-50 px-5 py-4 ring-1 ring-red-200/60 space-y-2">
+            <p className="text-sm leading-relaxed text-red-700 whitespace-pre-wrap">
+              {error}
+            </p>
+            {errorDebug && (
+              <div>
+                <button
+                  onClick={() => setShowDebug(!showDebug)}
+                  className="text-[11px] text-red-500 hover:text-red-700 transition underline"
+                >
+                  {showDebug ? "デバッグ情報を閉じる" : "デバッグ情報を表示"}
+                </button>
+                {showDebug && (
+                  <pre className="mt-2 rounded-lg bg-red-100/50 p-3 text-[11px] leading-relaxed text-red-800 overflow-x-auto whitespace-pre-wrap break-all">
+                    {JSON.stringify(errorDebug, null, 2)}
+                  </pre>
+                )}
+              </div>
+            )}
           </div>
         )}
 
