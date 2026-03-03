@@ -405,10 +405,23 @@ export function Transcriber() {
 
         {/* --- Error --- */}
         {error && (
-          <div className="rounded-2xl bg-red-50 px-5 py-4 ring-1 ring-red-200/60 space-y-2">
+          <div className="rounded-2xl bg-red-50 px-5 py-4 ring-1 ring-red-200/60 space-y-3">
             <p className="text-sm leading-relaxed text-red-700 whitespace-pre-wrap">
               {error}
             </p>
+            {"cobaltDownload" in (errorDebug ?? {}) && errorDebug && (
+              <a
+                href={String(errorDebug.cobaltDownload)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-red-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-red-700"
+              >
+                cobalt.tools で動画をダウンロード
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                </svg>
+              </a>
+            )}
             {errorDebug && (
               <div>
                 <button
