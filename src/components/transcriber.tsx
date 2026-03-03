@@ -222,9 +222,7 @@ export function Transcriber() {
                   className="w-full rounded-xl border border-slate-200 px-4 py-3 text-sm placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                 />
                 <p className="text-[11px] leading-relaxed text-slate-400">
-                  Loomシェアリンク、または音声/動画ファイルの直接URLに対応。
-                  <br />
-                  YouTube動画はダウンロードしてファイルアップロードをご利用ください。
+                  YouTube、Loomシェアリンク、音声/動画ファイルの直接URLに対応
                 </p>
               </div>
             )}

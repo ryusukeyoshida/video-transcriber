@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI, { toFile } from "openai";
+import ytdl from "@distube/ytdl-core";
 
 export const maxDuration = 120;
 
@@ -83,13 +84,11 @@ export async function POST(request: NextRequest) {
 async function downloadFromUrl(
   url: string,
 ): Promise<{ file: Awaited<ReturnType<typeof toFile>> } | { error: string }> {
-  if (
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)/.test(url)
-  ) {
-    return {
-      error:
-        "YouTube動画の直接ダウンロードには対応していません。動画をダウンロードしてからファイルアップロードをご利用ください。",
-    };
+  const ytMatch = url.match(
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]+)/,
+  );
+  if (ytMatch) {
+    return downloadFromYouTube(url);
   }
 
   const loomMatch = url.match(/loom\.com\/share\/([a-zA-Z0-9]+)/);
@@ -130,6 +129,51 @@ async function downloadFromUrl(
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return { error: `URLからのダウンロードに失敗しました: ${msg}` };
+  }
+}
+
+async function downloadFromYouTube(
+  url: string,
+): Promise<{ file: Awaited<ReturnType<typeof toFile>> } | { error: string }> {
+  try {
+    const info = await ytdl.getInfo(url);
+    const title = info.videoDetails.title || "youtube-audio";
+
+    const format = ytdl.chooseFormat(info.formats, {
+      quality: "lowestaudio",
+      filter: "audioonly",
+    });
+
+    if (!format) {
+      return {
+        error:
+          "YouTube動画の音声フォーマットを取得できませんでした。動画をダウンロードしてファイルアップロードをお試しください。",
+      };
+    }
+
+    const stream = ytdl.downloadFromInfo(info, { format });
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const buffer = Buffer.concat(chunks);
+
+    const ext =
+      format.container === "webm"
+        ? "webm"
+        : format.container === "mp4"
+          ? "m4a"
+          : "mp3";
+
+    const file = await toFile(buffer, `${title}.${ext}`, {
+      type: format.mimeType?.split(";")[0] || `audio/${ext}`,
+    });
+    return { file };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      error: `YouTube動画の取得に失敗しました: ${msg}\n\n動画をダウンロードしてファイルアップロードをお試しください。`,
+    };
   }
 }
 
