@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
       /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]+)/,
     );
     if (ytMatch && !file) {
-      return handleYouTube(ytMatch[1], dictionary);
+      return handleYouTube(url!, ytMatch[1], dictionary, apiKey);
     }
 
     let audioFile: Awaited<ReturnType<typeof toFile>>;
@@ -105,53 +105,141 @@ export async function POST(request: NextRequest) {
 }
 
 async function handleYouTube(
+  originalUrl: string,
   videoId: string,
   dictionary: DictEntry[],
+  apiKey: string,
 ): Promise<NextResponse> {
-  const attempts: { lang: string | undefined; error: string }[] = [];
+  const log: { step: string; result: string }[] = [];
 
+  // --- Step 1: YouTube字幕を試行 ---
   for (const lang of ["ja", undefined]) {
     try {
       const segments = await YoutubeTranscript.fetchTranscript(videoId, {
         ...(lang ? { lang } : {}),
       });
 
-      if (!segments || segments.length === 0) {
-        attempts.push({
-          lang,
-          error: `字幕データが空でした（lang=${lang ?? "auto"}）`,
+      if (segments && segments.length > 0) {
+        let text = segments.map((s) => s.text).join(" ");
+        text = text.replace(/\s+/g, " ").trim();
+        text = applyDictionary(text, dictionary);
+
+        return NextResponse.json({
+          text,
+          note: `YouTube字幕データから取得（lang=${lang ?? "auto"}, ${segments.length}セグメント）`,
         });
-        continue;
       }
-
-      let text = segments.map((s) => s.text).join(" ");
-      text = text.replace(/\s+/g, " ").trim();
-      text = applyDictionary(text, dictionary);
-
-      return NextResponse.json({
-        text,
-        note: `YouTube字幕データから取得しました（lang=${lang ?? "auto"}, ${segments.length}セグメント）。Whisper精度で文字起こしするには、動画をダウンロードしてファイルアップロードをご利用ください。`,
+      log.push({
+        step: `字幕取得(lang=${lang ?? "auto"})`,
+        result: "字幕データが空",
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      attempts.push({ lang, error: msg });
+      log.push({ step: `字幕取得(lang=${lang ?? "auto"})`, result: msg });
     }
   }
 
-  const debugLog = attempts
-    .map((a, i) => `[試行${i + 1}] lang=${a.lang ?? "auto"}: ${a.error}`)
-    .join("\n");
+  // --- Step 2: cobalt APIで音声ダウンロード → Whisper ---
+  const cobaltUrl =
+    process.env.COBALT_API_URL || "https://api.cobalt.tools";
 
-  console.error(`YouTube transcript failed for ${videoId}:\n${debugLog}`);
+  try {
+    log.push({ step: "cobalt API", result: `${cobaltUrl} にリクエスト中...` });
+
+    const cobaltRes = await fetch(cobaltUrl, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: originalUrl,
+        downloadMode: "audio",
+        audioFormat: "mp3",
+        audioBitrate: "128",
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    const cobaltData = await cobaltRes.json();
+
+    if (
+      cobaltData.status === "tunnel" ||
+      cobaltData.status === "redirect"
+    ) {
+      const audioUrl = cobaltData.url;
+      log.push({
+        step: "cobalt API",
+        result: `成功（status=${cobaltData.status}）`,
+      });
+
+      const audioRes = await fetch(audioUrl, {
+        signal: AbortSignal.timeout(90_000),
+      });
+
+      if (!audioRes.ok) {
+        log.push({
+          step: "cobalt音声ダウンロード",
+          result: `失敗（status=${audioRes.status}）`,
+        });
+      } else {
+        const buffer = Buffer.from(await audioRes.arrayBuffer());
+        log.push({
+          step: "cobalt音声ダウンロード",
+          result: `成功（${(buffer.length / 1024 / 1024).toFixed(1)}MB）`,
+        });
+
+        const audioFile = await toFile(buffer, "youtube-audio.mp3", {
+          type: "audio/mp3",
+        });
+
+        const prompt =
+          dictionary.length > 0
+            ? dictionary.map((e) => e.notation).join("、")
+            : undefined;
+
+        const openai = new OpenAI({ apiKey });
+        const transcription = await openai.audio.transcriptions.create({
+          file: audioFile,
+          model: "whisper-1",
+          language: "ja",
+          ...(prompt ? { prompt } : {}),
+        });
+
+        let text = transcription.text;
+        text = applyDictionary(text, dictionary);
+
+        return NextResponse.json({
+          text,
+          note: "cobalt経由でYouTube音声を取得し、Whisperで文字起こししました。",
+        });
+      }
+    } else {
+      const errCode = cobaltData.error?.code || cobaltData.status;
+      log.push({
+        step: "cobalt API",
+        result: `失敗（${errCode}）`,
+      });
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.push({ step: "cobalt API", result: `エラー: ${msg}` });
+  }
+
+  // --- すべて失敗 ---
+  console.error(
+    `YouTube handling failed for ${videoId}:\n` +
+      log.map((l) => `  [${l.step}] ${l.result}`).join("\n"),
+  );
 
   return NextResponse.json(
     {
       error:
-        "YouTube字幕の取得に失敗しました。この動画は字幕が無効になっている可能性があります。\n動画をダウンロードしてファイルアップロードをお試しください。",
+        "YouTube動画の文字起こしに失敗しました。\n動画をダウンロードしてファイルアップロードをお試しください。",
       debug: {
         videoId,
-        attempts,
         url: `https://www.youtube.com/watch?v=${videoId}`,
+        log,
       },
     },
     { status: 400 },
