@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI, { toFile } from "openai";
 import { YoutubeTranscript } from "youtube-transcript";
+import { Innertube } from "youtubei.js";
 
 export const maxDuration = 120;
 
@@ -224,6 +225,78 @@ async function handleYouTube(
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log.push({ step: "cobalt API", result: `エラー: ${msg}` });
+  }
+
+  // --- Step 3: InnerTube APIで音声ダウンロード → Whisper ---
+  try {
+    log.push({ step: "InnerTube", result: "接続中..." });
+
+    const yt = await Innertube.create({
+      lang: "ja",
+      location: "JP",
+      retrieve_player: true,
+    });
+
+    const info = await yt.getBasicInfo(videoId);
+
+    const formats = info.streaming_data?.adaptive_formats?.filter(
+      (f) => f.has_audio && !f.has_video,
+    );
+
+    if (!formats || formats.length === 0) {
+      log.push({ step: "InnerTube", result: "音声フォーマットが見つかりません" });
+    } else {
+      const format = formats[0];
+      const contentLength = format.content_length ?? 0;
+      log.push({
+        step: "InnerTube",
+        result: `フォーマット取得成功（${format.mime_type}, ${(contentLength / 1024 / 1024).toFixed(1)}MB）`,
+      });
+
+      const stream = await info.download({ type: "audio", quality: "bestefficiency" });
+      const reader = stream.getReader();
+      const chunks: Uint8Array[] = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(value);
+      }
+      const buffer = Buffer.concat(chunks);
+
+      log.push({
+        step: "InnerTube音声ダウンロード",
+        result: `成功（${(buffer.length / 1024 / 1024).toFixed(1)}MB）`,
+      });
+
+      const ext = format.mime_type?.includes("webm") ? "webm" : "m4a";
+      const audioFile = await toFile(buffer, `youtube-audio.${ext}`, {
+        type: format.mime_type?.split(";")[0] || `audio/${ext}`,
+      });
+
+      const prompt =
+        dictionary.length > 0
+          ? dictionary.map((e) => e.notation).join("、")
+          : undefined;
+
+      const openai = new OpenAI({ apiKey });
+      const transcription = await openai.audio.transcriptions.create({
+        file: audioFile,
+        model: "whisper-1",
+        language: "ja",
+        ...(prompt ? { prompt } : {}),
+      });
+
+      let text = transcription.text;
+      text = applyDictionary(text, dictionary);
+
+      return NextResponse.json({
+        text,
+        note: "InnerTube経由でYouTube音声を取得し、Whisperで文字起こししました。",
+      });
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.push({ step: "InnerTube", result: `エラー: ${msg}` });
   }
 
   // --- すべて失敗 ---
