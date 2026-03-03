@@ -227,7 +227,7 @@ async function handleYouTube(
     log.push({ step: "cobalt API", result: `エラー: ${msg}` });
   }
 
-  // --- Step 3: InnerTube APIで音声ダウンロード → Whisper ---
+  // --- Step 3: InnerTube API（getInfo）で音声ダウンロード → Whisper ---
   try {
     log.push({ step: "InnerTube", result: "接続中..." });
 
@@ -237,23 +237,37 @@ async function handleYouTube(
       retrieve_player: true,
     });
 
-    const info = await yt.getBasicInfo(videoId);
+    const info = await yt.getInfo(videoId);
 
-    const formats = info.streaming_data?.adaptive_formats?.filter(
+    const adaptiveCount =
+      info.streaming_data?.adaptive_formats?.length ?? 0;
+    const allFormats = info.streaming_data?.adaptive_formats ?? [];
+    const audioFormats = allFormats.filter(
       (f) => f.has_audio && !f.has_video,
     );
 
-    if (!formats || formats.length === 0) {
-      log.push({ step: "InnerTube", result: "音声フォーマットが見つかりません" });
+    log.push({
+      step: "InnerTube情報取得",
+      result: `adaptive=${adaptiveCount}, audio=${audioFormats.length}, formats=${JSON.stringify(allFormats.map((f) => ({ mime: f.mime_type, audio: f.has_audio, video: f.has_video })).slice(0, 5))}`,
+    });
+
+    if (audioFormats.length === 0) {
+      log.push({
+        step: "InnerTube",
+        result: "音声フォーマットが見つかりません",
+      });
     } else {
-      const format = formats[0];
+      const format = audioFormats[0];
       const contentLength = format.content_length ?? 0;
       log.push({
         step: "InnerTube",
         result: `フォーマット取得成功（${format.mime_type}, ${(contentLength / 1024 / 1024).toFixed(1)}MB）`,
       });
 
-      const stream = await info.download({ type: "audio", quality: "bestefficiency" });
+      const stream = await info.download({
+        type: "audio",
+        quality: "bestefficiency",
+      });
       const reader = stream.getReader();
       const chunks: Uint8Array[] = [];
       for (;;) {
@@ -307,11 +321,17 @@ async function handleYouTube(
 
   return NextResponse.json(
     {
-      error:
-        "YouTube動画の文字起こしに失敗しました。\n動画をダウンロードしてファイルアップロードをお試しください。",
+      error: [
+        "YouTube動画の自動文字起こしに失敗しました。",
+        "",
+        "以下の方法でお試しください：",
+        "1. cobalt.tools（ https://cobalt.tools ）で動画をダウンロード",
+        "2. ダウンロードしたファイルを「ファイルアップロード」タブで送信",
+      ].join("\n"),
       debug: {
         videoId,
         url: `https://www.youtube.com/watch?v=${videoId}`,
+        cobaltDownload: `https://cobalt.tools`,
         log,
       },
     },
