@@ -140,7 +140,57 @@ async function handleYouTube(
     }
   }
 
-  // --- Step 2: cobalt APIで音声ダウンロード → Whisper ---
+  // --- Step 2: InnerTube API で字幕を取得 ---
+  try {
+    log.push({ step: "InnerTube字幕", result: "接続中..." });
+
+    const yt = await Innertube.create({
+      lang: "ja",
+      location: "JP",
+      retrieve_player: false,
+    });
+
+    const info = await yt.getInfo(videoId);
+    const transcriptData = await info.getTranscript();
+
+    const body = transcriptData?.transcript?.content?.body;
+    const segments =
+      body && "initial_segments" in body ? body.initial_segments : [];
+
+    if (segments && segments.length > 0) {
+      const textParts: string[] = [];
+      for (const seg of segments) {
+        if ("snippet" in seg && seg.snippet?.text) {
+          textParts.push(seg.snippet.text);
+        }
+      }
+
+      if (textParts.length > 0) {
+        let text = textParts.join(" ").replace(/\s+/g, " ").trim();
+        text = applyDictionary(text, dictionary);
+
+        log.push({
+          step: "InnerTube字幕",
+          result: `成功（${textParts.length}セグメント）`,
+        });
+
+        return NextResponse.json({
+          text,
+          note: `InnerTube経由でYouTube字幕を取得（${textParts.length}セグメント）`,
+        });
+      }
+    }
+
+    log.push({
+      step: "InnerTube字幕",
+      result: `字幕データなし（segments=${segments?.length ?? 0}）`,
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.push({ step: "InnerTube字幕", result: `エラー: ${msg}` });
+  }
+
+  // --- Step 3: cobalt APIで音声ダウンロード → Whisper ---
   const cobaltUrl =
     process.env.COBALT_API_URL || "https://api.cobalt.tools";
 
